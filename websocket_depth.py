@@ -20,6 +20,8 @@ from util import *
 # set logger
 class UTCFormatter(logging.Formatter):
     converter = time.gmtime
+
+#todo: file may be too large if run forever
 logging.config.dictConfig({
     "version": 1,
     "formatters": {
@@ -32,7 +34,7 @@ logging.config.dictConfig({
         "fileHandler": {
             "class": "logging.FileHandler",
             "formatter": "customFormat",
-            "filename": "./md_depth.log",
+            "filename": "md_depth.log",
         },
     },
     "root": {
@@ -86,7 +88,7 @@ class MarketDataWorker:
 
     def update_date(self):
         def compress_and_upload(filename):
-            with open(filename, mode="rb") as fin, open(f"{filename}.zlib", mode="wb") as fout:
+            with open(os.path.join('data', filename), mode="rb") as fin, open(os.path.join('data', f"{filename}.zlib"), mode="wb") as fout:
                 data = fin.read()
                 compressed_data = zlib.compress(data, zlib.Z_BEST_COMPRESSION)
                 logger.debug(f"Original size before compress: {sys.getsizeof(data)}")
@@ -107,7 +109,7 @@ class MarketDataWorker:
         self.filename = f"{self.now.strftime('%Y%m%d')}_depth_raw_json"
 
     def write_file(self, data):
-        with open(self.filename, 'a') as outfile:
+        with open(os.path.join('data', self.filename), 'a') as outfile:
             outfile.write(json.dumps(data))
             outfile.write("\u000a")
 
@@ -191,8 +193,8 @@ def run(symbol, config):
     # https://blog.csdn.net/liuxingen/article/details/71169502
     dc = daemon.DaemonContext(working_directory=os.getcwd(),
                               umask=0o002, #prevent others write
-                              stdout=open("./daemonout.log", "a"),
-                              stderr=open("./daemonerr.log", "a"),
+                              stdout=open("./log/daemonout.log", "a"),
+                              stderr=open("./log/daemonerr.log", "a"),
                               pidfile=pid,
                               files_preserve=[logging.root.handlers[0].stream])
 
@@ -202,4 +204,8 @@ def run(symbol, config):
 
 
 if __name__ == "__main__":
+    if not os.path.exists('log'):
+        os.makedirs('log')
+    if not os.path.exists('data'):
+        os.makedirs('data')
     run()
