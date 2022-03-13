@@ -95,7 +95,7 @@ class MarketDataWorker:
                 logger.debug(f"Compressed size: {sys.getsizeof(compressed_data)}")
                 fout.write(compressed_data)
             try:
-                self.upload_to_drive(f"{filename}.zlib")
+                self.upload_to_drive(f"data/{filename}.zlib")
             except Exception as e:
                 logger.error(f"uploading file to drive got exception: {repr(e)}")
             finally:
