@@ -149,10 +149,10 @@ class MarketDataWorker:
         obj = json.loads(message)
         msg_type = obj['m']
         if msg_type == 'depth':
-            self.write_file(obj)
             exchange_ts = obj["data"]["ts"]
             if exchange_ts > self.next_day_ms:
                 self.update_date()
+            self.write_file(obj)
         elif msg_type == "ping":
             self.send_pong()
         else:
@@ -170,7 +170,7 @@ class MarketDataWorker:
         # "[1001]### closed ### CloudFlare WebSocket proxy restarting"
         if closeCode == 1001:
             self.need_reconnect = True
-            
+
         if self.need_reconnect and self.reconnect_count > 0:
             self.reconnect_count -= 1
             self.run()
