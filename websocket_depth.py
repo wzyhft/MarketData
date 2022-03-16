@@ -4,8 +4,10 @@
 
 import datetime
 import zlib
+
 import click
 import websocket
+
 try:
     import thread
 except ImportError:
@@ -14,14 +16,17 @@ import daemon
 import daemon.pidfile
 import logging
 import logging.config
-# Local imports 
+# Local imports
 from util import *
+
 
 # set logger
 class UTCFormatter(logging.Formatter):
     converter = time.gmtime
 
-#todo: file may be too large if run forever
+# todo: add snapshot and assset info
+# todo: file may be too large if run forever?
+# todo: custom file name and path in runtime?
 logging.config.dictConfig({
     "version": 1,
     "formatters": {
@@ -47,7 +52,7 @@ logger = logging.getLogger("__name__")
 
 
 class MarketDataWorker:
-    def __init__(self, url, symbol):
+    def __init__(self, url, symbol, file_prefix):
         super(MarketDataWorker, self).__init__()
         self.url = url
         self.symbol = symbol
@@ -55,7 +60,8 @@ class MarketDataWorker:
         self.next_day_ms = (self.now + datetime.timedelta(days=1)).replace(tzinfo=datetime.timezone.utc,
                                                                            hour=0, minute=0, second=0,
                                                                            microsecond=0).timestamp() * 1000.0
-        self.filename = f"{self.now.strftime('%Y%m%d')}_depth_raw_json"
+        self.file_prefix = file_prefix
+        self.filename = f"{self.file_prefix}_{self.now.strftime('%Y%m%d')}"
         self.ws = None
         self.need_reconnect = False
         self.reconnect_count = 5
@@ -68,8 +74,8 @@ class MarketDataWorker:
                                          on_error=self.on_error,
                                          on_close=self.on_close)
 
-        logger.info(f"MarketDataWorker starts on UTC {self.now} for symbol:{self.symbol}, writting in {self.filename},"
-                     f" will do compress and upload on {self.next_day_ms}")
+        logger.info(f"MarketDataWorker starts on UTC {self.now},\nsymbol:{self.symbol},\nwritting in {self.filename},"
+                    f" pid: {os.getpid()}, will do compress and upload on {self.next_day_ms}")
         self.ws.run_forever()
 
     def upload_to_drive(self, file):
@@ -88,25 +94,30 @@ class MarketDataWorker:
 
     def update_date(self):
         def compress_and_upload(filename):
-            with open(os.path.join('data', filename), mode="rb") as fin, open(os.path.join('data', f"{filename}.zlib"), mode="wb") as fout:
+            time.sleep(random.randint(0, 1000))
+            with open(os.path.join('data', filename), mode="rb") as fin, open(os.path.join('data', f"{filename}.zlib"),
+                                                                              mode="wb") as fout:
                 data = fin.read()
-                compressed_data = zlib.compress(data, zlib.Z_BEST_COMPRESSION)
-                logger.debug(f"Original size before compress: {sys.getsizeof(data)}")
-                logger.debug(f"Compressed size: {sys.getsizeof(compressed_data)}")
+                compress = zlib.compressobj(level=zlib.Z_BEST_COMPRESSION, wbits=-15, memLevel=2)
+                compressed_data = compress.compress(data)
+                compressed_data += compress.flush()
+                logger.info(f"Original size before compress: {sys.getsizeof(data)}")
+                logger.info(f"Compressed size: {sys.getsizeof(compressed_data)}")
                 fout.write(compressed_data)
             try:
                 self.upload_to_drive(f"data/{filename}.zlib")
             except Exception as e:
                 logger.error(f"uploading file to drive got exception: {repr(e)}")
             finally:
-                logger.error("upload to drive failed failed")
+                logger.info("upload to drive done")
 
         thread.start_new_thread(compress_and_upload, (self.filename,))
 
         self.now = datetime.datetime.fromtimestamp(self.next_day_ms / 1000)
         self.next_day_ms = (self.now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0,
                                                                            microsecond=0).timestamp() * 1000.0
-        self.filename = f"{self.now.strftime('%Y%m%d')}_depth_raw_json"
+        self.filename = f"{self.file_prefix}_{self.now.strftime('%Y%m%d')}"
+        logger.info(f"next_day_ms switched to {self.next_day_ms} and filename switched to {self.filename}")
 
     def write_file(self, data):
         with open(os.path.join('data', self.filename), 'a') as outfile:
@@ -149,12 +160,17 @@ class MarketDataWorker:
 
     def on_error(self, ws, error):
         logger.error(f"websocket-client on error {repr(error)}")
-        #todo: a better way to reconnect when connection down
+        # todo: a better way to reconnect when connection down
         if isinstance(error, Exception) and str(error).startswith("Connection to remote host was lost"):
             self.need_reconnect = True
 
     def on_close(self, ws, closeCode, closeMsg):
         logger.info(f"[{closeCode}]### closed ### {closeMsg}")
+        # todo: I don't know why I got this shit
+        # "[1001]### closed ### CloudFlare WebSocket proxy restarting"
+        if closeCode == 1001:
+            self.need_reconnect = True
+            
         if self.need_reconnect and self.reconnect_count > 0:
             self.reconnect_count -= 1
             self.run()
@@ -162,6 +178,7 @@ class MarketDataWorker:
     def on_open(self, ws):
         self.need_reconnect = False
         self.reconnect_count = 5
+
         def run(*args):
             self.sub_depth()
 
@@ -176,33 +193,35 @@ def run(symbol, config):
         config = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".", "config.json")
         logger.info(f"Config file is not specified, use {config}")
     wss_url = "wss://ascendex.com:443"
+    file_prefix = ""
     grp = 4
     if os.path.isfile(config):
         ascdexCfg = load_config(config)['ascendex']
         wss_url = ascdexCfg['wss']
         grp = ascdexCfg['group']
         symbol = ascdexCfg['symbol']
+        file_prefix = ascdexCfg['file_prefix']
 
     url = f"{wss_url}/{grp}/{ROUTE_PREFIX}/stream"
-    #logger.info(f"connecting to {url}, symbol {symbol}")
+    # logger.info(f"connecting to {url}, symbol {symbol}")
 
-    pid =  daemon.pidfile.PIDLockFile("/tmp/md_depth.pid")
+    pid = daemon.pidfile.PIDLockFile(f"/tmp/{file_prefix}.pid")
     if pid.is_locked():
         raise Exception("Process is already started")
 
     # https://blog.csdn.net/liuxingen/article/details/71169502
     dc = daemon.DaemonContext(working_directory=os.getcwd(),
-                              umask=0o002, #prevent others write
+                              umask=0o002,  # prevent others write
                               stdout=open("./log/daemonout.log", "a"),
                               stderr=open("./log/daemonerr.log", "a"),
                               pidfile=pid,
                               files_preserve=[logging.root.handlers[0].stream])
 
     with dc:
-        marketDataWorker = MarketDataWorker(url, symbol)
+        marketDataWorker = MarketDataWorker(url, symbol, file_prefix)
         marketDataWorker.run()
 
-
+# todo: limit memory usage
 if __name__ == "__main__":
     if not os.path.exists('log'):
         os.makedirs('log')
