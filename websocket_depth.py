@@ -163,6 +163,8 @@ class MarketDataWorker:
         # todo: a better way to reconnect when connection down
         if isinstance(error, Exception) and str(error).startswith("Connection to remote host was lost"):
             self.need_reconnect = True
+        elif isinstance(error, ConnectionResetError):
+            self.need_reconnect = True
 
     def on_close(self, ws, closeCode, closeMsg):
         logger.info(f"[{closeCode}]### closed ### {closeMsg}")
